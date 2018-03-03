@@ -1,0 +1,2 @@
+# Google Hash Code 2018 Preliminary Round Solution
+This project implements a solution for the car scheduling problem introduced in the online qualification round of the Google Hash Code 2018 contest. The solution is not even competitive - It's little more than a vehicle for my experimentation with Rust. 

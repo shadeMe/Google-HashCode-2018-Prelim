@@ -1,0 +1,6 @@
+[package]
+name = "google_hashcode18_prelim"
+version = "0.1.0"
+authors = ["shadeMe <shademehere@gmail.com>"]
+
+[dependencies]
