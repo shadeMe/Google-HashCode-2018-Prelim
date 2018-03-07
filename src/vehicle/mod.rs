@@ -23,7 +23,7 @@ struct RideTask {
 impl Eq for RideTask {}
 
 impl PartialEq for RideTask {
-	fn eq(&self, other: &RideTask) -> bool {
+	fn eq(&self, _other: &RideTask) -> bool {
 		// all tasks are unique
 		false
 	}
@@ -55,10 +55,6 @@ impl RideTask {
 		self.task_type == RideTaskType::DrivingToStart && self.is_idle()
 	}
 
-	fn is_waiting_at_start(&self) -> bool {
-		self.task_type == RideTaskType::WaitingAtStart && self.rem_steps > 0
-	}
-
 	fn is_done_waiting(&self) -> bool {
 		self.task_type == RideTaskType::WaitingAtStart && self.is_idle()
 	}
@@ -69,13 +65,6 @@ impl RideTask {
 
 	fn job(&self) -> JobPtr {
 		self.parent.clone()
-	}
-
-	fn job_if_idle(&self) -> Option<JobPtr> {
-		match self.is_idle() {
-			true => Some(self.job()),
-			_ => None
-		}
 	}
 
 	fn job_id(&self) -> JobId {
@@ -198,12 +187,6 @@ impl Vehicle {
 		self.rides.len() == 0 || self.current_task().unwrap().has_arrived_at_dest()
 	}
 
-	pub fn dist_from(&self, coord: Coord) -> i32 {
-		assert_eq!(self.is_idle(), true);
-
-		self.current_pos().unwrap().dist(&coord)
-	}
-
 	pub fn new_job(&mut self, context: NewJob) -> () {
 		let mut task_builder = RideTaskBuilder::new(&context.job);
 		let job = &context.job;
@@ -240,7 +223,7 @@ impl Vehicle {
 		self.rides.push(task_builder.build())
 	}
 
-	pub fn tick(&mut self, context: &NewTick) -> TickComplete {
+	pub fn tick(&mut self, _context: &NewTick) -> TickComplete {
 		let current_task = self.current_task_mut();
 		match current_task {
 			Some(t) => {

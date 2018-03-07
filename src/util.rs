@@ -49,35 +49,6 @@ impl PartialEq for Coord {
 	}
 }
 
-#[derive(Copy, Clone)]
-pub struct Counter {
-	counter:	i32,
-	start:		i32,
-}
-
-impl Counter {
-	pub fn start_zero() -> Counter {
-		Counter{counter: 0, start: 0}
-	} 	
-	
-	pub fn start_one() -> Counter {
-		Counter{counter: 1, start: 1}
-	}
-	
-	pub fn cur(&self) -> i32 {
-		self.counter
-	}
-	
-	pub fn inc(&mut self) -> () {
-		self.counter += 1
-	}
-
-	pub fn is_start(&self) -> bool {
-		self.counter == self.start
-	}
-}
-
-
 pub type TimeStep = i32;
 
 #[derive(Debug)]
@@ -141,6 +112,6 @@ impl FileWriter {
 
 impl Drop for FileWriter {
 	fn drop(&mut self) {
-		self.writer.flush();
+		self.writer.flush().expect("Couldn't flush file");
 	}
 }
