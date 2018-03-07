@@ -3,13 +3,14 @@ extern crate kdtree;
 
 use util::{Coord, TimeStep, FileReader, FileWriter, cmp_i32};
 use vehicle::Vehicle;
-use std::collections::{BinaryHeap};
+use std::collections::{BinaryHeap, HashMap};
 use std::rc::Rc;
 use std::cmp::Ordering;
 use std::vec::Vec;
 use std::cell::RefCell;
 use self::itertools::Itertools;
 use self::kdtree::KdTree;
+use std::hash::{Hash, Hasher};
 
 pub type JobId = i32;
 
@@ -19,6 +20,7 @@ pub trait HasJob {
 	fn end(&self) -> Coord;
 	fn earliest_start(&self) -> TimeStep;
 	fn latest_finish(&self) -> TimeStep;
+	fn dist(&self) -> i32;
 }
 
 pub type JobPtr = Rc<HasJob>;
@@ -40,8 +42,14 @@ impl Ord for HasJob {
 	}
 }
 impl Eq for HasJob {}
+impl Hash for HasJob {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		state.write_i32(self.id());
+		state.finish();
+	}
+}
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Job {
 	id:				JobId,
 	start:			Coord,
@@ -66,36 +74,28 @@ impl HasJob for Job {
 	fn latest_finish(&self) -> TimeStep {
 		self.latest_end
 	}
+	fn dist(&self) -> i32 {
+		self.start.dist(&self.end)
+	}
 }
 
 type VehPtr = Rc<RefCell<Vehicle>>;
 
-/// Context for a single simulation timestep 
-pub struct NewTick {
-	pub current_step:	TimeStep,
-}
-
-/// Context for a new job
-pub struct NewJob {
-	pub job:			JobPtr,
-	pub current_step:	TimeStep,
-}
-
 /// Output of a single simulation timestep
 pub enum TickComplete {
-	/// Continue execution
+	/// No-op, nothing to report
 	Continue,
-	/// Update current job
-	Reschedule(JobPtr),
+	/// Vehicle began moving from the start
+	JobStart(JobPtr),
 	/// Assign new job
-	JobComplete(Coord),
+	JobComplete(JobPtr, Coord),
 }
 
 pub struct JobScheduler {
 	num_rows:			i32,
 	num_cols:			i32,
 	num_vehicles:		i32,
-	num_rides:			i32,
+	num_jobs:			i32,
 	ride_bonus:			i32,
 	max_tsteps:			TimeStep,
 
@@ -103,6 +103,8 @@ pub struct JobScheduler {
 	fleet:              Vec<VehPtr>,
 	jobs:               Vec<JobPtr>,
 	rem_jobs:           BinaryHeap<JobPtr>,
+
+	job_scores:         HashMap<JobPtr, i32>,
 }
 
 impl JobScheduler {
@@ -111,13 +113,14 @@ impl JobScheduler {
 			num_rows: 0,
 			num_cols: 0,
 			num_vehicles: 0,
-			num_rides: 0,
+			num_jobs: 0,
 			ride_bonus: 0,
 			max_tsteps: 0,
 			current_step: 0,
 			fleet: Vec::default(),
 			jobs: Vec::default(),
 			rem_jobs: BinaryHeap::default(),
+			job_scores: HashMap::default(),
 		};
 
 		// parse input
@@ -131,14 +134,15 @@ impl JobScheduler {
 						out.num_rows = splits[0];
 						out.num_cols = splits[1];
 						out.num_vehicles = splits[2];
-						out.num_rides = splits[3];
+						out.num_jobs = splits[3];
 						out.ride_bonus = splits[4];
 						out.max_tsteps = splits[5];
 
 						out.current_step = 0;
 						out.fleet = Vec::with_capacity(out.num_vehicles as usize);
-						out.jobs = Vec::with_capacity(out.num_rides as usize);
-						out.rem_jobs = BinaryHeap::with_capacity(out.num_rides as usize);
+						out.jobs = Vec::with_capacity(out.num_jobs as usize);
+						out.rem_jobs = BinaryHeap::with_capacity(out.num_jobs as usize);
+						out.job_scores = HashMap::with_capacity(out.num_jobs as usize);
 					}
 					else {
 						let adjusted_line_no : i32 = line_no as i32 - 1;      // ride numbers start at 0
@@ -171,13 +175,13 @@ impl JobScheduler {
 
 		for j in &out.jobs {
 			out.rem_jobs.push(j.clone());
+			out.job_scores.insert(j.clone(), 0);
 		}
 
 		out
 	}
 
 	fn tick_vehicles(&mut self) -> KdTree<VehPtr, [f64; 2]> {
-		let tick_context = NewTick{current_step: self.current_step};
 		let mut bounding_tree = KdTree::new(2);
 
 		for v in self.fleet.iter_mut() {
@@ -188,15 +192,24 @@ impl JobScheduler {
 				continue;
 			}
 
-			let result = v.borrow_mut().tick(&tick_context);
+			let result = v.borrow_mut().tick(self.current_step);
 			match result {
 				TickComplete::Continue => {},
-				TickComplete::Reschedule(job) => {
-					v.borrow_mut().new_job(NewJob { job, current_step: self.current_step });
+				TickComplete::JobStart(job) => {
+					// save the negative score for easy exclusion later
+					let score = -(job.dist() + (self.ride_bonus * (self.current_step == job.earliest_start()) as i32));
+					self.job_scores.insert(job.clone(), score);
+//					println!("Score {} for job {}", score, job.id());
 				}
-				TickComplete::JobComplete(coord) => {
-//					println!("Vehicle {} completed job", v.borrow().id());
+				TickComplete::JobComplete(job, coord) => {
+					// flip the sign on the score if it arrives on time
+					if self.current_step < job.latest_finish() {
+						let score = self.job_scores[&job];
+						self.job_scores.insert(job.clone(), -score);
+					}
+
 					bounding_tree.add([coord.x as f64, coord.y as f64], v.clone());
+//					println!("Vehicle {} completed job", v.borrow().id());
 				},
 			};
 		}
@@ -207,10 +220,10 @@ impl JobScheduler {
 	pub fn run(&mut self) {
 		assert_eq!(self.rem_jobs.is_empty(), false);
 
-		println!("Being simulation | Vehicles: {} | Jobs: {} | Ticks: {}",
-				self.num_vehicles,
-				self.num_rides,
-				self.max_tsteps);
+		println!("Being Simulation | Vehicles: {} | Jobs: {} | Ticks: {}",
+		         self.num_vehicles,
+		         self.num_jobs,
+		         self.max_tsteps);
 
 		'sim_loop: for step in 1..self.max_tsteps {
 			self.current_step = step;
@@ -242,7 +255,7 @@ impl JobScheduler {
 							'nearest_loop: for mut itr in idle_vehicles.iter_nearest(vec![start.x as f64, start.y as f64].as_slice(), &dist_measure) {
 								while let Some(&mut (dist_from_start, v)) = itr.next().as_mut() {
 									if v.borrow().is_idle() {
-										v.borrow_mut().new_job(NewJob { job: j.clone(), current_step: self.current_step });
+										v.borrow_mut().queue_new_job(&j);
 //										println!("\tAssigned to vehicle {}", v.borrow().id());
 
 										assigned = true;
@@ -266,9 +279,10 @@ impl JobScheduler {
 //			}
 		}
 
-		println!("Simulation ended | Remaining jobs: {} | Idling Vehicles: {}",
+		println!("End Simulation | Remaining jobs: {} | Idling Vehicles: {} | Score: {}",
 		         self.rem_jobs.len(),
-		         self.fleet.iter().filter(|v| v.borrow().is_idle()).collect_vec().len());
+		         self.fleet.iter().filter(|v| v.borrow().is_idle()).collect_vec().len(),
+				 self.calculate_score());
 	}
 
 	pub fn write_output(&self, out: &mut FileWriter) {
@@ -286,5 +300,9 @@ impl JobScheduler {
 		}
 
 		out
+	}
+
+	pub fn calculate_score(&self) -> u64 {
+		self.job_scores.values().into_iter().fold(0, |a, s| if *s > 0 { a + *s as u64 } else { a } )
 	}
 }

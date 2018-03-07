@@ -2,7 +2,7 @@ extern crate itertools;
 
 use util::{Coord, TimeStep};
 use scheduler::{JobPtr, JobId};
-use scheduler::{NewTick, NewJob, TickComplete};
+use scheduler::TickComplete;
 use std::hash::{Hash, Hasher};
 use self::itertools::Itertools;
 
@@ -74,6 +74,14 @@ impl RideTask {
 	fn task_type(&self) -> RideTaskType {
 		self.task_type
 	}
+
+	fn job_if_not_complete(&self) -> Option<JobPtr> {
+		if self.is_idle() && !self.has_arrived_at_dest() {
+			Some(self.job())
+		} else {
+			None
+		}
+	}
 }
 
 struct RideTaskBuilder {
@@ -118,8 +126,9 @@ type VehicleId = i32;
 
 #[derive(Eq)]
 pub struct Vehicle {
-	id:			VehicleId,
-	rides:		Vec<RideTask>
+	id:			    VehicleId,
+	rides:		    Vec<RideTask>,
+	job_buffer:     Vec<JobPtr>,        // using a vector as there is no default job to use in the initializer
 }
 
 impl PartialEq for Vehicle {
@@ -140,6 +149,7 @@ impl Vehicle {
 		Vehicle{
 			id,
 			rides: Vec::<RideTask>::new(),
+			job_buffer: Vec::<JobPtr>::new()
 		}
 	}
 
@@ -156,6 +166,10 @@ impl Vehicle {
 
 	fn current_task(&self) -> Option<&RideTask> {
 		self.rides.last()
+	}
+
+	fn try_update_job_task(&self) -> Option<JobPtr> {
+		self.current_task().and_then(|t| t.job_if_not_complete())
 	}
 
 	pub fn current_pos(&self) -> Option<Coord> {
@@ -184,33 +198,33 @@ impl Vehicle {
 	}
 
 	pub fn is_idle(&self) -> bool {
-		self.rides.len() == 0 || self.current_task().unwrap().has_arrived_at_dest()
+		self.job_buffer.is_empty() && (self.rides.len() == 0 || self.current_task().unwrap().has_arrived_at_dest())
 	}
 
-	pub fn new_job(&mut self, context: NewJob) -> () {
-		let mut task_builder = RideTaskBuilder::new(&context.job);
-		let job = &context.job;
-		task_builder.set_parent(&job);
+	fn add_job_task(&mut self, job: &JobPtr, current_step: TimeStep) -> RideTaskType {
+		let mut task_builder = RideTaskBuilder::new(job);
 
 		let cur_pos = self.current_pos().unwrap();
 		let dist_to_end = cur_pos.dist(&job.end());
 		let dist_to_start = cur_pos.dist(&job.start());
+		let mut out_task_type = RideTaskType::Invalid;
 		assert!(dist_to_start >= 0 && dist_to_end >= 0);
 
 		{
 			let mut set_task_params = |t, s| {
+				out_task_type = t;
 				task_builder.set_task_type(t);
 				task_builder.set_rem_steps(s);
-		//		println!("Vehicle {} -> Task {:?}, Steps {}", self.id(), t, s);
+//				println!("Vehicle {} -> Task {:?}, Steps {}", self.id(), t, s);
 			};
 
 			if dist_to_start > 0 {
 				set_task_params(RideTaskType::DrivingToStart, dist_to_start);
 			} else if dist_to_start == 0 {
-				if context.current_step >= job.earliest_start() {
+				if current_step >= job.earliest_start() {
 					set_task_params(RideTaskType::DrivingToEnd, dist_to_end);
 				} else {
-					set_task_params(RideTaskType::WaitingAtStart, job.earliest_start() - context.current_step);
+					set_task_params(RideTaskType::WaitingAtStart, job.earliest_start() - current_step);
 				}
 			} else if dist_to_end > 0 {
 					set_task_params(RideTaskType::DrivingToEnd, dist_to_end);
@@ -220,35 +234,62 @@ impl Vehicle {
 			}
 		}
 
-		self.rides.push(task_builder.build())
+		self.rides.push(task_builder.build());
+		out_task_type
 	}
 
-	pub fn tick(&mut self, _context: &NewTick) -> TickComplete {
-		let current_task = self.current_task_mut();
-		match current_task {
-			Some(t) => {
-				if !t.is_idle() {
-					if t.step() {
-						let job = t.job();
+	pub fn queue_new_job(&mut self, job: &JobPtr) {
+		assert_eq!(self.job_buffer.len(), 0);
 
-						if t.has_arrived_at_start() {
-							return TickComplete::Reschedule(job.clone());
-						} else if t.is_done_waiting() {
-							return TickComplete::Reschedule(job.clone());
-						} else if t.has_arrived_at_dest() {
-							return TickComplete::JobComplete(job.end());
-						} else {
-							unreachable!();
-						}
+		self.job_buffer.push(job.clone());
+	}
+
+	pub fn tick(&mut self, current_step: TimeStep) -> TickComplete {
+		assert!(self.job_buffer.len() <= 1);
+
+		// load the job on the buffer, if any
+		if !self.job_buffer.is_empty() {
+			let job = self.job_buffer.pop().unwrap();
+			self.add_job_task(&job, current_step);
+		}
+
+		assert!(self.rides.len() > 0);
+		let mut out = TickComplete::Continue;
+
+		if let Some(t) = self.current_task_mut() {
+			if !t.is_idle() {
+				if t.step() {
+					let job = &t.job();
+
+					if t.has_arrived_at_start() {
+						// the job task will be updated next tick
+						out = TickComplete::Continue;
+					} else if t.is_done_waiting() {
+						// same as above, the next job task will be updated next tick
+						out = TickComplete::JobStart(job.clone());
+					} else if t.has_arrived_at_dest() {
+						out = TickComplete::JobComplete(job.clone(), job.end());
+					} else {
+						unreachable!()
 					}
 				}
-
-				TickComplete::Continue
-			},
-			None => {
-				unreachable!();
 			}
 		}
+
+		// strange control flow because borrow checker (tm)
+		if let Some(job) = self.try_update_job_task() {
+			assert!(self.job_buffer.is_empty());
+
+			// account for cases where the waiting state is not available/is skipped
+			match self.add_job_task(&job, current_step) {
+				RideTaskType::DrivingToEnd => {
+					out = TickComplete::JobStart(job.clone());
+				},
+				_ => {}
+			};
+		}
+
+		out
 	}
 
 	pub fn assigned_rides(&self) -> Vec<JobId> {
