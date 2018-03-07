@@ -1,12 +1,23 @@
 use std::fs::File;
-use std::io::{BufReader, BufRead};
+use std::io::{BufReader, BufRead, Write, BufWriter};
 use std;
+use std::cmp::Ordering;
 
 fn manhattan_dist(a: &Coord, b: &Coord) -> i32 {
 	i32::abs(a.x - b.x) + i32::abs(a.y - b.y)
 }
 
-#[derive(Copy, Clone, Eq, Hash)]
+pub fn cmp_i32(a: i32, b: i32) -> Ordering {
+	if a < b {
+		Ordering::Less
+	} else if a > b {
+		Ordering::Greater
+	} else {
+		Ordering::Equal
+	}
+}
+
+#[derive(Copy, Clone, Eq, Hash, Debug)]
 pub struct Coord {
 	pub x:	i32,
 	pub y:	i32
@@ -38,6 +49,7 @@ impl PartialEq for Coord {
 	}
 }
 
+#[derive(Copy, Clone)]
 pub struct Counter {
 	counter:	i32,
 	start:		i32,
@@ -68,27 +80,67 @@ impl Counter {
 
 pub type TimeStep = i32;
 
+#[derive(Debug)]
+pub enum FileIOError {
+	CouldntOpenFile(std::io::Error),
+	LineReadError(std::io::Error),
+	LineWriteError(std::io::Error)
+}
+
 pub struct FileReader {
-	line_counter:	Counter,
-	reader:			BufReader<File>,
+	reader:			Box<BufReader<File>>
 }
 
 impl FileReader {
-	pub fn new(path: &str) -> Result<FileReader, std::io::Error> {
-		let mut out = FileReader{
-			line_counter: Counter::start_zero(),
-			reader: BufReader::new(try!(File::open(path))),
+	pub fn new(path: &str) -> Result<FileReader, FileIOError> {
+		let out = FileReader {
+			reader: Box::new(BufReader::new(try!(File::open(path)
+															.map_err(|e| FileIOError::CouldntOpenFile(e)))))
 		};
 
 		Ok(out)
 	}
 
-	pub fn read_all_lines<F>(&mut self, delegate: F)
-		where F: FnOnce(Result<(&str, &Counter), std::io::Error>)
-	{
-		self.reader.lines().for_each(|l| {
-			delegate(l.map(|s| (s.as_str(), &self.line_counter)));
-			self.line_counter.inc();
+	pub fn read_all_lines(self) -> Result<Vec<String>, Vec<FileIOError>> {
+		let mut lines = Vec::<String>::new();
+		let mut errs = Vec::<FileIOError>::new();
+
+		self.reader.lines().for_each(|line|  {
+			match line {
+				Ok(l) => lines.push(l.to_string()),
+				Err(e) => errs.push(FileIOError::LineReadError(e))
+			}
 		});
+
+		if !errs.is_empty() {
+			Err(errs)
+		} else {
+			Ok(lines)
+		}
+	}
+}
+
+pub struct FileWriter {
+	writer:     Box<BufWriter<File>>
+}
+
+impl FileWriter {
+	pub fn new(path: &str) -> Result<FileWriter, FileIOError> {
+		let out = FileWriter {
+			writer: Box::new(BufWriter::new(try!(File::create(path)
+				.map_err(|e| FileIOError::CouldntOpenFile(e)))))
+		};
+
+		Ok(out)
+	}
+
+	pub fn write_line(&mut self, line: &str) -> Result<(), FileIOError> {
+		self.writer.write_all(line.as_bytes()).map_err(|e| FileIOError::LineWriteError(e))
+	}
+}
+
+impl Drop for FileWriter {
+	fn drop(&mut self) {
+		self.writer.flush();
 	}
 }

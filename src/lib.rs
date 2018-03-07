@@ -1,5 +1,4 @@
-
-mod util;
+pub mod util;
 mod vehicle;
-mod scheduler;
+pub mod scheduler;
 
