@@ -3,7 +3,7 @@ extern crate kdtree;
 
 use util::{Coord, TimeStep, FileReader, FileWriter, cmp_i32};
 use vehicle::Vehicle;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{HashMap};
 use std::rc::Rc;
 use std::cmp::Ordering;
 use std::vec::Vec;
@@ -27,18 +27,17 @@ pub type JobPtr = Rc<HasJob>;
 
 impl PartialOrd for HasJob {
 	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-		Some(cmp_i32(other.earliest_start(), self.earliest_start()))
+		Some(cmp_i32(self.earliest_start(), other.earliest_start()))
 	}
 }
 impl PartialEq for HasJob {
 	fn eq(&self, other: &Self) -> bool {
-		cmp_i32(other.earliest_start(), self.earliest_start()) == Ordering::Equal
+		cmp_i32(self.earliest_start(), other.earliest_start()) == Ordering::Equal
 	}
 }
 impl Ord for HasJob {
 	fn cmp(&self, other: &Self) -> Ordering {
-		// We flip the ordering as we need a min-heap
-		cmp_i32(other.earliest_start(), self.earliest_start())
+		cmp_i32(self.earliest_start(), other.earliest_start())
 	}
 }
 impl Eq for HasJob {}
@@ -102,7 +101,7 @@ pub struct JobScheduler {
 	current_step:		TimeStep,
 	fleet:              Vec<VehPtr>,
 	jobs:               Vec<JobPtr>,
-	rem_jobs:           BinaryHeap<JobPtr>,
+	rem_jobs:           Vec<JobPtr>,
 
 	job_scores:         HashMap<JobPtr, i32>,
 }
@@ -119,7 +118,7 @@ impl JobScheduler {
 			current_step: 0,
 			fleet: Vec::default(),
 			jobs: Vec::default(),
-			rem_jobs: BinaryHeap::default(),
+			rem_jobs: Vec::default(),
 			job_scores: HashMap::default(),
 		};
 
@@ -141,7 +140,7 @@ impl JobScheduler {
 						out.current_step = 0;
 						out.fleet = Vec::with_capacity(out.num_vehicles as usize);
 						out.jobs = Vec::with_capacity(out.num_jobs as usize);
-						out.rem_jobs = BinaryHeap::with_capacity(out.num_jobs as usize);
+						out.rem_jobs = Vec::with_capacity(out.num_jobs as usize);
 						out.job_scores = HashMap::with_capacity(out.num_jobs as usize);
 					}
 					else {
@@ -178,6 +177,16 @@ impl JobScheduler {
 			out.job_scores.insert(j.clone(), 0);
 		}
 
+		out.rem_jobs.sort_by(|a, b| {
+			if a.earliest_start() < b.earliest_start() {
+				Ordering::Less
+			} else if a.earliest_start() > b.earliest_start() {
+				Ordering::Greater
+			} else {
+				cmp_i32(a.id(), b.id())
+			}
+		});
+
 		out
 	}
 
@@ -199,7 +208,6 @@ impl JobScheduler {
 					// save the negative score for easy exclusion later
 					let score = -(job.dist() + (self.ride_bonus * (self.current_step == job.earliest_start()) as i32));
 					self.job_scores.insert(job.clone(), score);
-//					println!("Score {} for job {}", score, job.id());
 				}
 				TickComplete::JobComplete(job, coord) => {
 					// flip the sign on the score if it arrives on time
@@ -217,6 +225,125 @@ impl JobScheduler {
 		bounding_tree
 	}
 
+	fn greedy_scheduling(&mut self, idle_vehicles: &KdTree<VehPtr, [f64; 2]>) {
+		if idle_vehicles.size() > 0 {
+			'assign_loop: loop {
+				let mut assigned = false;
+
+				match self.rem_jobs.last() {
+					None => break 'assign_loop,
+					Some(j) => {
+						// greedy solution
+						let start = j.start();
+						let end = j.end();
+						let earliest_start_delta = j.earliest_start() - self.current_step;
+						let dist_measure = |a: &[f64], b: &[f64]| {
+							a.iter().zip(b.iter())
+								.map(|(x, y)| f64::abs(x - y))
+								.fold(0f64, ::std::ops::Add::add)
+						};
+
+//							println!("Assigning job {} | start {},{} | end {},{} | earliest {}",
+//							        j.id(),
+//									j.start().x, j.start().y,
+//									j.end().x, j.end().y,
+//									j.earliest_start());
+
+						'nearest_loop: for mut itr in idle_vehicles.iter_nearest(vec![start.x as f64, start.y as f64].as_slice(), &dist_measure) {
+							while let Some(&mut (dist_from_start, v)) = itr.next().as_mut() {
+								if v.borrow().is_idle() {
+									v.borrow_mut().queue_new_job(&j);
+//										println!("\tAssigned to vehicle {}", v.borrow().id());
+
+									assigned = true;
+									break 'nearest_loop;
+								}
+							}
+						}
+					}
+				}
+
+				if assigned {
+					self.rem_jobs.pop();
+				} else {
+					break 'assign_loop;
+				}
+			}
+		}
+	}
+
+	fn funky_scheduling(&mut self, idle_vehicles: &KdTree<VehPtr, [f64; 2]>) {
+		if idle_vehicles.size() > 0 {
+			let mut candidates: Vec<VehPtr> = Vec::new();
+			let mut relax_start = false;
+			let mut relax_end = false;
+
+			'assign_loop: loop {
+				let mut assigned_idx: i32 = -1;
+				candidates.clear();
+
+				'job_loop: for (idx, j) in self.rem_jobs.iter().enumerate() {
+					let start = j.start();
+					let dist_measure = |a: &[f64], b: &[f64]| {
+						a.iter().zip(b.iter())
+							.map(|(x, y)| f64::abs(x - y))
+							.fold(0f64, ::std::ops::Add::add)
+					};
+
+//					println!("Assigning job {} | start {},{} | end {},{} | earliest {}",
+//					        j.id(),
+//							j.start().x, j.start().y,
+//							j.end().x, j.end().y,
+//							j.earliest_start());
+
+					'nearest_loop: for mut itr in idle_vehicles.iter_nearest(vec![start.x as f64, start.y as f64].as_slice(), &dist_measure) {
+						while let Some(&mut (dist_from_start, v)) = itr.next().as_mut() {
+							if v.borrow().is_idle() {
+								candidates.push(v.clone());
+//								println!("Candidate {} for Job {}", v.borrow().id(), j.id());
+
+								let pos = v.borrow().current_pos().unwrap();
+								let dist_to_start = pos.dist(&j.start());
+								let tot_dist = dist_to_start + j.dist();
+
+								if relax_end || self.current_step + tot_dist < j.latest_finish() {
+									if relax_start || self.current_step + dist_to_start < j.earliest_start() {
+//										println!("\tAssigned to vehicle {}", v.borrow().id());
+
+										v.borrow_mut().queue_new_job(&j);
+										assigned_idx = idx as i32;
+										break 'job_loop;
+									}
+								}
+
+							}
+						}
+					}
+				}
+
+				if assigned_idx != -1 {
+					self.rem_jobs.remove(assigned_idx as usize);
+					relax_start = false;
+					relax_end = false;
+				} else if !candidates.is_empty() {
+					// relax conditions one by one
+					if !relax_start || !relax_end {
+						if !relax_start {
+							relax_start = true;
+						} else {
+							relax_end = true;
+						}
+					} else {
+						unreachable!();
+					}
+
+				} else {
+					break 'assign_loop;
+				}
+			}
+		}
+	}
+
 	pub fn run(&mut self) {
 		assert_eq!(self.rem_jobs.is_empty(), false);
 
@@ -229,54 +356,7 @@ impl JobScheduler {
 			self.current_step = step;
 
 			let idle_vehicles = self.tick_vehicles();
-			if idle_vehicles.size() > 0 {
-				'assign_loop: loop {
-					let mut assigned = false;
-
-					match self.rem_jobs.peek() {
-						None => break 'assign_loop,
-						Some(j) => {
-							// greedy solution
-							let start = j.start();
-							let end = j.end();
-							let earliest_start_delta = j.earliest_start() - self.current_step;
-							let dist_measure = |a: &[f64], b: &[f64]| {
-								a.iter().zip(b.iter())
-									.map(|(x, y)| f64::abs(x - y))
-									.fold(0f64, ::std::ops::Add::add)
-							};
-
-//							println!("Assigning job {} | start {},{} | end {},{} | earliest {}",
-//							        j.id(),
-//									j.start().x, j.start().y,
-//									j.end().x, j.end().y,
-//									j.earliest_start());
-
-							'nearest_loop: for mut itr in idle_vehicles.iter_nearest(vec![start.x as f64, start.y as f64].as_slice(), &dist_measure) {
-								while let Some(&mut (dist_from_start, v)) = itr.next().as_mut() {
-									if v.borrow().is_idle() {
-										v.borrow_mut().queue_new_job(&j);
-//										println!("\tAssigned to vehicle {}", v.borrow().id());
-
-										assigned = true;
-										break 'nearest_loop;
-									}
-								}
-							}
-						}
-					}
-
-					if assigned {
-						self.rem_jobs.pop();
-					} else {
-						break 'assign_loop;
-					}
-				}
-			}
-
-//			if step % 100 == 0 {
-//				println!("End of step {}/{} | Remaining jobs: {}", step, self.max_tsteps, self.rem_jobs.len());
-//			}
+			self.funky_scheduling(&idle_vehicles);
 		}
 
 		println!("End Simulation | Remaining jobs: {} | Idling Vehicles: {} | Score: {}",

@@ -16,6 +16,7 @@ fn main() {
 				                ".\\data\\c_no_hurry.o",
 				                ".\\data\\d_metropolis.o",
 				                ".\\data\\e_high_bonus.o"];
+	let mut total_score: u64 = 0;
 
 	input.iter().zip(output.iter()).collect_vec().into_iter().foreach(|(i, o)| {
 		let input = FileReader::new(i).expect("Couldn't open input file");
@@ -26,5 +27,8 @@ fn main() {
 
 		runner.run();
 		runner.write_output(&mut output);
+		total_score += runner.calculate_score();
 	});
+
+	println!("\n\nTotal score: {}", total_score);
 }
