@@ -31,7 +31,7 @@ impl PartialEq for RideTask {
 
 impl Hash for RideTask {
 	fn hash<H: Hasher>(&self, state: &mut H) {
-		// weak hash, but we don't care as the task object is mean to be transient
+		// weak hash, but we don't care as the task object is meant to be transient
 		state.write_u32(self.task_type as u32);
 		state.write_i32(self.rem_steps);
 		state.finish();
@@ -128,7 +128,7 @@ type VehicleId = i32;
 pub struct Vehicle {
 	id:			    VehicleId,
 	rides:		    Vec<RideTask>,
-	job_buffer:     Vec<JobPtr>,        // using a vector as there is no default job to use in the initializer
+	job_buffer:     Option<JobPtr>,
 }
 
 impl PartialEq for Vehicle {
@@ -149,7 +149,7 @@ impl Vehicle {
 		Vehicle{
 			id,
 			rides: Vec::<RideTask>::new(),
-			job_buffer: Vec::<JobPtr>::new()
+			job_buffer: None
 		}
 	}
 
@@ -198,7 +198,7 @@ impl Vehicle {
 	}
 
 	pub fn is_idle(&self) -> bool {
-		self.job_buffer.is_empty() && (self.rides.len() == 0 || self.current_task().unwrap().has_arrived_at_dest())
+		self.job_buffer.is_none() && (self.rides.len() == 0 || self.current_task().unwrap().has_arrived_at_dest())
 	}
 
 	fn add_job_task(&mut self, job: &JobPtr, current_step: TimeStep) -> RideTaskType {
@@ -239,18 +239,15 @@ impl Vehicle {
 	}
 
 	pub fn queue_new_job(&mut self, job: &JobPtr) {
-		assert_eq!(self.job_buffer.len(), 0);
+		assert_eq!(self.job_buffer.is_none(), true);
 
-		self.job_buffer.push(job.clone());
+		self.job_buffer = Some(job.clone());
 	}
 
 	pub fn tick(&mut self, current_step: TimeStep) -> TickComplete {
-		assert!(self.job_buffer.len() <= 1);
-
 		// load the job on the buffer, if any
-		if !self.job_buffer.is_empty() {
-			let job = self.job_buffer.pop().unwrap();
-			self.add_job_task(&job, current_step);
+		if let Some(new_jerb) = self.job_buffer.take() {
+			self.add_job_task(&new_jerb, current_step);
 		}
 
 		assert!(self.rides.len() > 0);
@@ -278,7 +275,7 @@ impl Vehicle {
 
 		// strange control flow because borrow checker (tm)
 		if let Some(job) = self.try_update_job_task() {
-			assert!(self.job_buffer.is_empty());
+			assert_eq!(self.job_buffer, None);
 
 			// account for cases where the waiting state is not available/is skipped
 			match self.add_job_task(&job, current_step) {

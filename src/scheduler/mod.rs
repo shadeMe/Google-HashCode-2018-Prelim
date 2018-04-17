@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use self::itertools::Itertools;
 use self::kdtree::KdTree;
 use std::hash::{Hash, Hasher};
+use std::fmt::{Debug, Formatter, Error};
 
 pub type JobId = i32;
 
@@ -45,6 +46,12 @@ impl Hash for HasJob {
 	fn hash<H: Hasher>(&self, state: &mut H) {
 		state.write_i32(self.id());
 		state.finish();
+	}
+}
+impl Debug for HasJob {
+	fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+		f.write_str(format!("jobID: {}", self.id()).as_str());
+		Ok(())
 	}
 }
 
