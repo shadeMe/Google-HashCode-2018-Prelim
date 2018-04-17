@@ -1,23 +1,23 @@
 extern crate itertools;
 
-use util::{Coord, TimeStep};
-use scheduler::{JobPtr, JobId};
+use scheduler::{JobId, JobPtr};
 use scheduler::TickComplete;
-use std::hash::{Hash, Hasher};
 use self::itertools::Itertools;
+use std::hash::{Hash, Hasher};
+use util::{Coord, TimeStep};
 
 #[derive(PartialEq, Copy, Clone, Hash, Eq, Debug)]
 enum RideTaskType {
 	Invalid,
 	DrivingToStart,
 	WaitingAtStart,
-	DrivingToEnd
+	DrivingToEnd,
 }
 
 struct RideTask {
-	task_type:		RideTaskType,
-	parent:			JobPtr,
-	rem_steps:		TimeStep,
+	task_type: RideTaskType,
+	parent: JobPtr,
+	rem_steps: TimeStep,
 }
 
 impl Eq for RideTask {}
@@ -85,17 +85,17 @@ impl RideTask {
 }
 
 struct RideTaskBuilder {
-	buf:		RideTask,
+	buf: RideTask,
 }
 
 impl RideTaskBuilder {
-	fn new(j : &JobPtr) -> RideTaskBuilder {
-		RideTaskBuilder{
+	fn new(j: &JobPtr) -> RideTaskBuilder {
+		RideTaskBuilder {
 			buf: RideTask {
-					task_type: RideTaskType::Invalid,
-					parent: j.clone(),
-					rem_steps: 0
-			}
+				task_type: RideTaskType::Invalid,
+				parent: j.clone(),
+				rem_steps: 0,
+			},
 		}
 	}
 
@@ -117,7 +117,7 @@ impl RideTaskBuilder {
 		RideTask {
 			task_type: self.buf.task_type,
 			parent: self.buf.parent.clone(),
-			rem_steps: self.buf.rem_steps
+			rem_steps: self.buf.rem_steps,
 		}
 	}
 }
@@ -126,9 +126,9 @@ type VehicleId = i32;
 
 #[derive(Eq)]
 pub struct Vehicle {
-	id:			    VehicleId,
-	rides:		    Vec<RideTask>,
-	job_buffer:     Option<JobPtr>,
+	id: VehicleId,
+	rides: Vec<RideTask>,
+	job_buffer: Option<JobPtr>,
 }
 
 impl PartialEq for Vehicle {
@@ -146,10 +146,10 @@ impl Hash for Vehicle {
 
 impl Vehicle {
 	pub fn new(id: VehicleId) -> Vehicle {
-		Vehicle{
+		Vehicle {
 			id,
 			rides: Vec::<RideTask>::new(),
-			job_buffer: None
+			job_buffer: None,
 		}
 	}
 
@@ -160,7 +160,7 @@ impl Vehicle {
 	fn current_task_mut(&mut self) -> Option<&mut RideTask> {
 		match self.rides.len() {
 			l if l > 0 => Some(&mut self.rides[l - 1]),
-			_ => None
+			_ => None,
 		}
 	}
 
@@ -179,26 +179,26 @@ impl Vehicle {
 					match t.task_type() {
 						RideTaskType::DrivingToStart | RideTaskType::WaitingAtStart => {
 							return Some(t.job().start());
-						},
+						}
 						RideTaskType::DrivingToEnd => {
 							return Some(t.job().end());
-						},
+						}
 						_ => {
 							unreachable!();
 						}
 					};
-				}
-				else {
+				} else {
 					// no position when in transit
 					return None;
 				}
-			},
-			None => Some(Coord::default())        // origin if at start
+			}
+			None => Some(Coord::default()), // origin if at start
 		}
 	}
 
 	pub fn is_idle(&self) -> bool {
-		self.job_buffer.is_none() && (self.rides.len() == 0 || self.current_task().unwrap().has_arrived_at_dest())
+		self.job_buffer.is_none()
+			&& (self.rides.len() == 0 || self.current_task().unwrap().has_arrived_at_dest())
 	}
 
 	fn add_job_task(&mut self, job: &JobPtr, current_step: TimeStep) -> RideTaskType {
@@ -215,7 +215,7 @@ impl Vehicle {
 				out_task_type = t;
 				task_builder.set_task_type(t);
 				task_builder.set_rem_steps(s);
-//				println!("Vehicle {} -> Task {:?}, Steps {}", self.id(), t, s);
+				//				println!("Vehicle {} -> Task {:?}, Steps {}", self.id(), t, s);
 			};
 
 			if dist_to_start > 0 {
@@ -224,10 +224,13 @@ impl Vehicle {
 				if current_step >= job.earliest_start() {
 					set_task_params(RideTaskType::DrivingToEnd, dist_to_end);
 				} else {
-					set_task_params(RideTaskType::WaitingAtStart, job.earliest_start() - current_step);
+					set_task_params(
+						RideTaskType::WaitingAtStart,
+						job.earliest_start() - current_step,
+					);
 				}
 			} else if dist_to_end > 0 {
-					set_task_params(RideTaskType::DrivingToEnd, dist_to_end);
+				set_task_params(RideTaskType::DrivingToEnd, dist_to_end);
 			} else {
 				// not sure if this ever happens in the input data (start_pos == end_pos for some pair of jobs)
 				unreachable!();
@@ -281,7 +284,7 @@ impl Vehicle {
 			match self.add_job_task(&job, current_step) {
 				RideTaskType::DrivingToEnd => {
 					out = TickComplete::JobStart(job.clone());
-				},
+				}
 				_ => {}
 			};
 		}
@@ -290,6 +293,11 @@ impl Vehicle {
 	}
 
 	pub fn assigned_rides(&self) -> Vec<JobId> {
-		self.rides.iter().map(|t| t.job_id()).into_iter().dedup().collect()
+		self.rides
+			.iter()
+			.map(|t| t.job_id())
+			.into_iter()
+			.dedup()
+			.collect()
 	}
 }

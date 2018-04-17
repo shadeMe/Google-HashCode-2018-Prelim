@@ -1,17 +1,17 @@
 extern crate itertools;
 extern crate kdtree;
 
-use util::{Coord, TimeStep, FileReader, FileWriter, cmp_i32};
-use vehicle::Vehicle;
-use std::collections::{HashMap};
-use std::rc::Rc;
-use std::cmp::Ordering;
-use std::vec::Vec;
-use std::cell::RefCell;
 use self::itertools::Itertools;
 use self::kdtree::KdTree;
+use std::cell::RefCell;
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::fmt::{Debug, Error, Formatter};
 use std::hash::{Hash, Hasher};
-use std::fmt::{Debug, Formatter, Error};
+use std::rc::Rc;
+use std::vec::Vec;
+use util::{cmp_i32, Coord, FileReader, FileWriter, TimeStep};
+use vehicle::Vehicle;
 
 pub type JobId = i32;
 
@@ -57,11 +57,11 @@ impl Debug for HasJob {
 
 #[derive(Debug, Default)]
 pub struct Job {
-	id:				JobId,
-	start:			Coord,
-	end:			Coord,
-	earliest_start:	TimeStep,
-	latest_end:		TimeStep,
+	id: JobId,
+	start: Coord,
+	end: Coord,
+	earliest_start: TimeStep,
+	latest_end: TimeStep,
 }
 
 impl HasJob for Job {
@@ -98,23 +98,23 @@ pub enum TickComplete {
 }
 
 pub struct JobScheduler {
-	num_rows:			i32,
-	num_cols:			i32,
-	num_vehicles:		i32,
-	num_jobs:			i32,
-	ride_bonus:			i32,
-	max_tsteps:			TimeStep,
+	num_rows: i32,
+	num_cols: i32,
+	num_vehicles: i32,
+	num_jobs: i32,
+	ride_bonus: i32,
+	max_tsteps: TimeStep,
 
-	current_step:		TimeStep,
-	fleet:              Vec<VehPtr>,
-	jobs:               Vec<JobPtr>,
-	rem_jobs:           Vec<JobPtr>,
+	current_step: TimeStep,
+	fleet: Vec<VehPtr>,
+	jobs: Vec<JobPtr>,
+	rem_jobs: Vec<JobPtr>,
 
-	job_scores:         HashMap<JobPtr, i32>,
+	job_scores: HashMap<JobPtr, i32>,
 }
 
 impl JobScheduler {
-	pub fn new(input: FileReader) -> JobScheduler  {
+	pub fn new(input: FileReader) -> JobScheduler {
 		let mut out = JobScheduler {
 			num_rows: 0,
 			num_cols: 0,
@@ -133,7 +133,8 @@ impl JobScheduler {
 		match input.read_all_lines() {
 			Ok(lines) => {
 				for (line_no, line) in lines.iter().enumerate() {
-					let mut splits: Vec<i32> = line.split(' ').map(|s| s.parse::<i32>().unwrap()).collect();
+					let mut splits: Vec<i32> =
+						line.split(' ').map(|s| s.parse::<i32>().unwrap()).collect();
 					assert_eq!(splits.len(), 6);
 
 					if line_no == 0 {
@@ -149,9 +150,8 @@ impl JobScheduler {
 						out.jobs = Vec::with_capacity(out.num_jobs as usize);
 						out.rem_jobs = Vec::with_capacity(out.num_jobs as usize);
 						out.job_scores = HashMap::with_capacity(out.num_jobs as usize);
-					}
-					else {
-						let adjusted_line_no : i32 = line_no as i32 - 1;      // ride numbers start at 0
+					} else {
+						let adjusted_line_no: i32 = line_no as i32 - 1; // ride numbers start at 0
 						let x_start = splits[0];
 						let y_start = splits[1];
 						let x_end = splits[2];
@@ -159,7 +159,7 @@ impl JobScheduler {
 						let early = splits[4];
 						let late = splits[5];
 
-						let jerb = Job{
+						let jerb = Job {
 							id: adjusted_line_no,
 							start: Coord::new(x_start, y_start),
 							end: Coord::new(x_end, y_end),
@@ -169,10 +169,10 @@ impl JobScheduler {
 
 						out.jobs.push(Rc::new(jerb));
 					}
-
 				}
-			},
-			Err(errs) => errs.into_iter().foreach(|err| print!("Error reading input. Error: {:?}", err)),
+			}
+			Err(errs) => errs.into_iter()
+				.foreach(|err| print!("Error reading input. Error: {:?}", err)),
 		};
 
 		for i in 0..out.num_vehicles {
@@ -210,10 +210,11 @@ impl JobScheduler {
 
 			let result = v.borrow_mut().tick(self.current_step);
 			match result {
-				TickComplete::Continue => {},
+				TickComplete::Continue => {}
 				TickComplete::JobStart(job) => {
 					// save the negative score for easy exclusion later
-					let score = -(job.dist() + (self.ride_bonus * (self.current_step == job.earliest_start()) as i32));
+					let score = -(job.dist()
+						+ (self.ride_bonus * (self.current_step == job.earliest_start()) as i32));
 					self.job_scores.insert(job.clone(), score);
 				}
 				TickComplete::JobComplete(job, coord) => {
@@ -224,8 +225,8 @@ impl JobScheduler {
 					}
 
 					bounding_tree.add([coord.x as f64, coord.y as f64], v.clone());
-//					println!("Vehicle {} completed job", v.borrow().id());
-				},
+					//					println!("Vehicle {} completed job", v.borrow().id());
+				}
 			};
 		}
 
@@ -245,22 +246,25 @@ impl JobScheduler {
 						let end = j.end();
 						let earliest_start_delta = j.earliest_start() - self.current_step;
 						let dist_measure = |a: &[f64], b: &[f64]| {
-							a.iter().zip(b.iter())
+							a.iter()
+								.zip(b.iter())
 								.map(|(x, y)| f64::abs(x - y))
 								.fold(0f64, ::std::ops::Add::add)
 						};
 
-//							println!("Assigning job {} | start {},{} | end {},{} | earliest {}",
-//							        j.id(),
-//									j.start().x, j.start().y,
-//									j.end().x, j.end().y,
-//									j.earliest_start());
+						//						println!("Assigning job {} | start {},{} | end {},{} | earliest {}",
+						//							        j.id(),
+						//									j.start().x, j.start().y,
+						//									j.end().x, j.end().y,
+						//									j.earliest_start());
 
-						'nearest_loop: for mut itr in idle_vehicles.iter_nearest(vec![start.x as f64, start.y as f64].as_slice(), &dist_measure) {
+						'nearest_loop: for mut itr in idle_vehicles.iter_nearest(
+							vec![start.x as f64, start.y as f64].as_slice(),
+							&dist_measure,
+						) {
 							while let Some(&mut (dist_from_start, v)) = itr.next().as_mut() {
 								if v.borrow().is_idle() {
 									v.borrow_mut().queue_new_job(&j);
-//										println!("\tAssigned to vehicle {}", v.borrow().id());
 
 									assigned = true;
 									break 'nearest_loop;
@@ -292,37 +296,33 @@ impl JobScheduler {
 				'job_loop: for (idx, j) in self.rem_jobs.iter().enumerate() {
 					let start = j.start();
 					let dist_measure = |a: &[f64], b: &[f64]| {
-						a.iter().zip(b.iter())
+						a.iter()
+							.zip(b.iter())
 							.map(|(x, y)| f64::abs(x - y))
 							.fold(0f64, ::std::ops::Add::add)
 					};
 
-//					println!("Assigning job {} | start {},{} | end {},{} | earliest {}",
-//					        j.id(),
-//							j.start().x, j.start().y,
-//							j.end().x, j.end().y,
-//							j.earliest_start());
-
-					'nearest_loop: for mut itr in idle_vehicles.iter_nearest(vec![start.x as f64, start.y as f64].as_slice(), &dist_measure) {
+					'nearest_loop: for mut itr in idle_vehicles.iter_nearest(
+						vec![start.x as f64, start.y as f64].as_slice(),
+						&dist_measure,
+					) {
 						while let Some(&mut (dist_from_start, v)) = itr.next().as_mut() {
 							if v.borrow().is_idle() {
 								candidates.push(v.clone());
-//								println!("Candidate {} for Job {}", v.borrow().id(), j.id());
 
 								let pos = v.borrow().current_pos().unwrap();
 								let dist_to_start = pos.dist(&j.start());
 								let tot_dist = dist_to_start + j.dist();
 
 								if relax_end || self.current_step + tot_dist < j.latest_finish() {
-									if relax_start || self.current_step + dist_to_start < j.earliest_start() {
-//										println!("\tAssigned to vehicle {}", v.borrow().id());
-
-										v.borrow_mut().queue_new_job(&j);
-										assigned_idx = idx as i32;
-										break 'job_loop;
-									}
+									if relax_start
+										|| self.current_step + dist_to_start < j.earliest_start()
+										{
+											v.borrow_mut().queue_new_job(&j);
+											assigned_idx = idx as i32;
+											break 'job_loop;
+										}
 								}
-
 							}
 						}
 					}
@@ -343,7 +343,6 @@ impl JobScheduler {
 					} else {
 						unreachable!();
 					}
-
 				} else {
 					break 'assign_loop;
 				}
@@ -354,10 +353,10 @@ impl JobScheduler {
 	pub fn run(&mut self) {
 		assert_eq!(self.rem_jobs.is_empty(), false);
 
-		println!("Being Simulation | Vehicles: {} | Jobs: {} | Ticks: {}",
-		         self.num_vehicles,
-		         self.num_jobs,
-		         self.max_tsteps);
+		println!(
+			"Being Simulation | Vehicles: {} | Jobs: {} | Ticks: {}",
+			self.num_vehicles, self.num_jobs, self.max_tsteps
+		);
 
 		'sim_loop: for step in 1..self.max_tsteps {
 			self.current_step = step;
@@ -366,10 +365,16 @@ impl JobScheduler {
 			self.funky_scheduling(&idle_vehicles);
 		}
 
-		println!("End Simulation | Remaining jobs: {} | Idling Vehicles: {} | Score: {}",
-		         self.rem_jobs.len(),
-		         self.fleet.iter().filter(|v| v.borrow().is_idle()).collect_vec().len(),
-				 self.calculate_score());
+		println!(
+			"End Simulation | Remaining jobs: {} | Idling Vehicles: {} | Score: {}",
+			self.rem_jobs.len(),
+			self.fleet
+				.iter()
+				.filter(|v| v.borrow().is_idle())
+				.collect_vec()
+				.len(),
+			self.calculate_score()
+		);
 	}
 
 	pub fn write_output(&self, out: &mut FileWriter) {
@@ -383,13 +388,23 @@ impl JobScheduler {
 			assert_eq!(v.id(), idx as i32);
 
 			let rides = v.assigned_rides();
-			out += &format!("{}{}\n", rides.len(), rides.iter().fold(String::new(), |s, id| s + " " + id.to_string().as_str()).as_str());
+			out += &format!(
+				"{}{}\n",
+				rides.len(),
+				rides
+					.iter()
+					.fold(String::new(), |s, id| s + " " + id.to_string().as_str())
+					.as_str()
+			);
 		}
 
 		out
 	}
 
 	pub fn calculate_score(&self) -> u64 {
-		self.job_scores.values().into_iter().fold(0, |a, s| if *s > 0 { a + *s as u64 } else { a } )
+		self.job_scores
+			.values()
+			.into_iter()
+			.fold(0, |a, s| if *s > 0 { a + *s as u64 } else { a })
 	}
 }
