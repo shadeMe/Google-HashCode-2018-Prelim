@@ -15,47 +15,6 @@ use vehicle::Vehicle;
 
 pub type JobId = i32;
 
-pub trait HasJob {
-	fn id(&self) -> JobId;
-	fn start(&self) -> Coord;
-	fn end(&self) -> Coord;
-	fn earliest_start(&self) -> TimeStep;
-	fn latest_finish(&self) -> TimeStep;
-	fn dist(&self) -> i32;
-}
-
-pub type JobPtr = Rc<HasJob>;
-
-impl PartialOrd for HasJob {
-	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-		Some(cmp_i32(self.earliest_start(), other.earliest_start()))
-	}
-}
-impl PartialEq for HasJob {
-	fn eq(&self, other: &Self) -> bool {
-		cmp_i32(self.earliest_start(), other.earliest_start()) == Ordering::Equal
-	}
-}
-impl Ord for HasJob {
-	fn cmp(&self, other: &Self) -> Ordering {
-		cmp_i32(self.earliest_start(), other.earliest_start())
-	}
-}
-impl Eq for HasJob {}
-impl Hash for HasJob {
-	fn hash<H: Hasher>(&self, state: &mut H) {
-		state.write_i32(self.id());
-		state.finish();
-	}
-}
-impl Debug for HasJob {
-	fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
-		f.write_str(format!("jobID: {}", self.id()).as_str());
-		Ok(())
-	}
-}
-
-#[derive(Debug, Default)]
 pub struct Job {
 	id: JobId,
 	start: Coord,
@@ -64,24 +23,58 @@ pub struct Job {
 	latest_end: TimeStep,
 }
 
-impl HasJob for Job {
-	fn id(&self) -> JobId {
+impl Job {
+	pub fn id(&self) -> JobId {
 		self.id
 	}
-	fn start(&self) -> Coord {
+	pub fn start(&self) -> Coord {
 		self.start.clone()
 	}
-	fn end(&self) -> Coord {
+	pub fn end(&self) -> Coord {
 		self.end.clone()
 	}
-	fn earliest_start(&self) -> TimeStep {
+	pub fn earliest_start(&self) -> TimeStep {
 		self.earliest_start
 	}
-	fn latest_finish(&self) -> TimeStep {
+	pub fn latest_finish(&self) -> TimeStep {
 		self.latest_end
 	}
-	fn dist(&self) -> i32 {
+	pub fn dist(&self) -> i32 {
 		self.start.dist(&self.end)
+	}
+}
+
+impl PartialOrd for Job {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+		Some(cmp_i32(self.earliest_start(), other.earliest_start()))
+	}
+}
+
+impl PartialEq for Job {
+	fn eq(&self, other: &Self) -> bool {
+		cmp_i32(self.earliest_start(), other.earliest_start()) == Ordering::Equal
+	}
+}
+
+impl Ord for Job {
+	fn cmp(&self, other: &Self) -> Ordering {
+		cmp_i32(self.earliest_start(), other.earliest_start())
+	}
+}
+
+impl Eq for Job {}
+
+impl Hash for Job {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		state.write_i32(self.id());
+		state.finish();
+	}
+}
+
+impl Debug for Job {
+	fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+		f.write_str(format!("jobID: {}", self.id()).as_str());
+		Ok(())
 	}
 }
 
@@ -92,9 +85,17 @@ pub enum TickComplete {
 	/// No-op, nothing to report
 	Continue,
 	/// Vehicle began moving from the start
-	JobStart(JobPtr),
+	JobStart(
+		JobId, /*id*/
+		i32, /*dist*/
+		TimeStep, /*earliest_start*/
+	),
 	/// Assign new job
-	JobComplete(JobPtr, Coord),
+	JobComplete(
+		JobId, /*id*/
+		TimeStep, /*latest_finish*/
+		Coord, /*end*/
+	),
 }
 
 pub struct JobScheduler {
@@ -107,10 +108,8 @@ pub struct JobScheduler {
 
 	current_step: TimeStep,
 	fleet: Vec<VehPtr>,
-	jobs: Vec<JobPtr>,
-	rem_jobs: Vec<JobPtr>,
-
-	job_scores: HashMap<JobPtr, i32>,
+	rem_jobs: Vec<Job>,
+	job_scores: HashMap<JobId, i32>,
 }
 
 impl JobScheduler {
@@ -124,7 +123,6 @@ impl JobScheduler {
 			max_tsteps: 0,
 			current_step: 0,
 			fleet: Vec::default(),
-			jobs: Vec::default(),
 			rem_jobs: Vec::default(),
 			job_scores: HashMap::default(),
 		};
@@ -147,7 +145,6 @@ impl JobScheduler {
 
 						out.current_step = 0;
 						out.fleet = Vec::with_capacity(out.num_vehicles as usize);
-						out.jobs = Vec::with_capacity(out.num_jobs as usize);
 						out.rem_jobs = Vec::with_capacity(out.num_jobs as usize);
 						out.job_scores = HashMap::with_capacity(out.num_jobs as usize);
 					} else {
@@ -167,7 +164,8 @@ impl JobScheduler {
 							latest_end: late,
 						};
 
-						out.jobs.push(Rc::new(jerb));
+						out.job_scores.insert(jerb.id(), 0);
+						out.rem_jobs.push(jerb);
 					}
 				}
 			}
@@ -177,11 +175,6 @@ impl JobScheduler {
 
 		for i in 0..out.num_vehicles {
 			out.fleet.push(Rc::new(RefCell::new(Vehicle::new(i))));
-		}
-
-		for j in &out.jobs {
-			out.rem_jobs.push(j.clone());
-			out.job_scores.insert(j.clone(), 0);
 		}
 
 		out.rem_jobs.sort_by(|a, b| {
@@ -211,76 +204,26 @@ impl JobScheduler {
 			let result = v.borrow_mut().tick(self.current_step);
 			match result {
 				TickComplete::Continue => {}
-				TickComplete::JobStart(job) => {
+				TickComplete::JobStart(id, dist, earliest_start) => {
 					// save the negative score for easy exclusion later
-					let score = -(job.dist()
-						+ (self.ride_bonus * (self.current_step == job.earliest_start()) as i32));
-					self.job_scores.insert(job.clone(), score);
+					let score =
+						-(dist + (self.ride_bonus * (self.current_step == earliest_start) as i32));
+					self.job_scores.insert(id, score);
 				}
-				TickComplete::JobComplete(job, coord) => {
+				TickComplete::JobComplete(id, latest_finish, coord) => {
 					// flip the sign on the score if it arrives on time
-					if self.current_step < job.latest_finish() {
-						let score = self.job_scores[&job];
-						self.job_scores.insert(job.clone(), -score);
+					if self.current_step < latest_finish {
+						let score = self.job_scores[&id];
+						self.job_scores.insert(id, -score);
 					}
 
 					bounding_tree.add([coord.x as f64, coord.y as f64], v.clone());
-					//					println!("Vehicle {} completed job", v.borrow().id());
+					//println!("Vehicle {} completed job", v.borrow().id());
 				}
 			};
 		}
 
 		bounding_tree
-	}
-
-	fn greedy_scheduling(&mut self, idle_vehicles: &KdTree<VehPtr, [f64; 2]>) {
-		if idle_vehicles.size() > 0 {
-			'assign_loop: loop {
-				let mut assigned = false;
-
-				match self.rem_jobs.last() {
-					None => break 'assign_loop,
-					Some(j) => {
-						// greedy solution
-						let start = j.start();
-						let end = j.end();
-						let earliest_start_delta = j.earliest_start() - self.current_step;
-						let dist_measure = |a: &[f64], b: &[f64]| {
-							a.iter()
-								.zip(b.iter())
-								.map(|(x, y)| f64::abs(x - y))
-								.fold(0f64, ::std::ops::Add::add)
-						};
-
-						//						println!("Assigning job {} | start {},{} | end {},{} | earliest {}",
-						//							        j.id(),
-						//									j.start().x, j.start().y,
-						//									j.end().x, j.end().y,
-						//									j.earliest_start());
-
-						'nearest_loop: for mut itr in idle_vehicles.iter_nearest(
-							vec![start.x as f64, start.y as f64].as_slice(),
-							&dist_measure,
-						) {
-							while let Some(&mut (dist_from_start, v)) = itr.next().as_mut() {
-								if v.borrow().is_idle() {
-									v.borrow_mut().queue_new_job(&j);
-
-									assigned = true;
-									break 'nearest_loop;
-								}
-							}
-						}
-					}
-				}
-
-				if assigned {
-					self.rem_jobs.pop();
-				} else {
-					break 'assign_loop;
-				}
-			}
-		}
 	}
 
 	fn funky_scheduling(&mut self, idle_vehicles: &KdTree<VehPtr, [f64; 2]>) {
@@ -290,7 +233,8 @@ impl JobScheduler {
 			let mut relax_end = false;
 
 			'assign_loop: loop {
-				let mut assigned_idx: i32 = -1;
+				let mut assigned_idx = -1i32;
+				let mut assignee = None;
 				candidates.clear();
 
 				'job_loop: for (idx, j) in self.rem_jobs.iter().enumerate() {
@@ -318,7 +262,7 @@ impl JobScheduler {
 									if relax_start
 										|| self.current_step + dist_to_start < j.earliest_start()
 										{
-											v.borrow_mut().queue_new_job(&j);
+											assignee = Some(v.clone());
 											assigned_idx = idx as i32;
 											break 'job_loop;
 										}
@@ -329,7 +273,10 @@ impl JobScheduler {
 				}
 
 				if assigned_idx != -1 {
-					self.rem_jobs.remove(assigned_idx as usize);
+					let assigned = self.rem_jobs.remove(assigned_idx as usize);
+					let assignee = assignee.unwrap();
+					assignee.borrow_mut().queue_new_job(assigned);
+
 					relax_start = false;
 					relax_end = false;
 				} else if !candidates.is_empty() {
@@ -358,7 +305,7 @@ impl JobScheduler {
 			self.num_vehicles, self.num_jobs, self.max_tsteps
 		);
 
-		'sim_loop: for step in 1..self.max_tsteps {
+		for step in 1..self.max_tsteps {
 			self.current_step = step;
 
 			let idle_vehicles = self.tick_vehicles();
